@@ -1,0 +1,17 @@
+{
+  "center_lat": 52.38,
+  "center_lon": 9.73,
+  "width_km": 80,
+  "aspect": [
+    21,
+    34
+  ],
+  "image_width": 1280,
+  "past_minutes": 60,
+  "future_minutes": 120,
+  "basemap_zoom": "auto",
+  "location_name": "Hannover/LeineLab",
+  "circle_radii_km": [
+    10
+  ]
+}
