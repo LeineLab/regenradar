@@ -52,13 +52,21 @@ def reference_time():
     return p(ref), p(tdim)
 
 
+def image_width(cfg):
+    """Radar hat nativ 1 km Aufloesung; ca. 4 px/km reichen, der Browser skaliert hoch."""
+    w = cfg.get("image_width", "auto")
+    if w != "auto":
+        return int(w)
+    return int(max(320, min(1280, cfg["width_km"] * 4)))
+
+
 def tile_zoom(cfg):
-    """Kachelstufe passend zur Kartenbreite (ca. 1920 px Breite); "basemap_zoom" in der Config ueberschreibt."""
+    """Kachelstufe, bei der die Karte ca. 1920 px breit ist (nicht feiner); "basemap_zoom" in der Config ueberschreibt."""
     z = cfg.get("basemap_zoom", "auto")
     if z != "auto":
         return int(z)
     m_per_px = cfg["width_km"] * 1000 / 1920.0
-    z = math.ceil(math.log(2 * math.pi * R * math.cos(math.radians(cfg["center_lat"])) / 256 / m_per_px, 2))
+    z = math.ceil(math.log(2 * math.pi * R * math.cos(math.radians(cfg["center_lat"])) / 256 / m_per_px, 2) - 0.5)
     return max(3, min(17, z))
 
 
@@ -90,7 +98,7 @@ def main():
     bb = bbox(cfg)
     tiles = basemap(cfg, bb)
     ref, tmax = reference_time()
-    w = cfg["image_width"]; h = round(w * cfg["aspect"][1] / cfg["aspect"][0])
+    w = image_width(cfg); h = round(w * cfg["aspect"][1] / cfg["aspect"][0])
     start = ref - timedelta(minutes=cfg["past_minutes"])
     end = min(ref + timedelta(minutes=cfg["future_minutes"]), tmax)
     # Vorhersage-Frames nur neu holen, wenn es eine neue Referenzzeit (neuer Modelllauf) gibt
@@ -122,7 +130,7 @@ def main():
             print("Frame %s fehlgeschlagen: %s" % (iso(t), e), file=sys.stderr)
             return t, fn, os.path.exists(path)
 
-    with ThreadPoolExecutor(max_workers=cfg.get("parallel_downloads", 6)) as ex:
+    with ThreadPoolExecutor(max_workers=cfg.get("parallel_downloads", 3)) as ex:
         results = list(ex.map(fetch, steps))
     frames = [{"t": iso(t), "file": fn, "forecast": t > ref} for t, fn, ok in results if ok]
     if all(ok for _, _, ok in results):

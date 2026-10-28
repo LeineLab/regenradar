@@ -43,6 +43,7 @@
   var HOLD_LAST_MS = 2500;   // Pause am Ende der Schleife
   var RELOAD_MS = 60000;     // frames.json neu laden
   var STALE_MIN = 25;        // Warnung, wenn Daten älter
+  var MAX_CANVAS = 1920;     // max. Canvas-Kantenlänge in px (kleiner = weniger CPU/RAM, Karte wird hochskaliert)
 
   var meta = null, imgs = [], cur = 0, timer = null, loadedKey = '';
   function $(id) { return document.getElementById(id); }
@@ -84,42 +85,49 @@
   var RAD = 6378137, CIRC = 2 * Math.PI * RAD;
   function unit() { return Math.max(0.5, $('stage').offsetHeight / 1080); }
   function applyScale() { document.documentElement.style.fontSize = unit() + 'px'; }
+  // Karte und Radar werden auf je EIN Canvas gezeichnet (statt hunderter <img>-Kacheln und 37 gestapelter Bilder).
+  // Die Basemap wird nur einmal gemalt; pro Frame wird nur das kleine Radar-Canvas neu beschrieben.
+  var layoutKey = '', radarCv = null, radarCtx = null;
+  function drawBase(bc, L, cs) {
+    var ctx = bc.getContext('2d'), tileM = CIRC / Math.pow(2, meta.zoom), re = /^t_(\d+)_(\d+)_(\d+)\.png$/;
+    var pending = 0, i, m, names = [];
+    ctx.fillStyle = '#222'; ctx.fillRect(0, 0, bc.width, bc.height);
+    for (i = 0; i < meta.tiles.length; i++) { if (re.test(meta.tiles[i])) names.push(meta.tiles[i]); }
+    pending = names.length;
+    function finish() {
+      if (--pending > 0) return;
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(0, 0, bc.width, bc.height); // Abdunkeln einmalig
+    }
+    function paint(name) {
+      var mm = re.exec(name), im = new Image();
+      var mx0 = -CIRC / 2 + (+mm[2]) * tileM, my1 = CIRC / 2 - (+mm[3]) * tileM; // linke obere Ecke (Mercator-m)
+      im.onload = function () {
+        ctx.drawImage(im, (mx0 - meta.bbox[0]) * L.s * cs, (meta.bbox[3] - my1) * L.s * cs, tileM * L.s * cs + 1, tileM * L.s * cs + 1);
+        finish();
+      };
+      im.onerror = finish;
+      im.src = 'data/tiles/' + name;
+    }
+    for (i = 0; i < names.length; i++) paint(names[i]);
+  }
   function build() {
-    var u = unit();
-    var L = mapLayout(), map = $('map');
+    var u = unit(), L = mapLayout(), map = $('map');
+    var key = [Math.round(L.w), Math.round(L.h), meta.zoom, meta.tiles.length, meta.bbox.join(','), (meta.circles_m || []).join(',')].join('|');
+    if (key === layoutKey) return;   // nichts zu tun, solange Geometrie/Kacheln gleich sind
+    layoutKey = key;
+    var cs = Math.min(1, MAX_CANVAS / Math.max(L.w, L.h));   // Canvas-Aufloesung begrenzen, CSS skaliert hoch
     map.style.left = L.x + 'px'; map.style.top = L.y + 'px';
     map.style.width = L.w + 'px'; map.style.height = L.h + 'px';
     map.innerHTML = '';
-    var z = meta.zoom, n = Math.pow(2, z), tileM = CIRC / n, i, m, kind, x, y, im;
-    var re = /^t_(\d+)_(\d+)_(\d+)\.png$/;
-    function addTile(name, m) {
-      var tx = +m[2], ty = +m[3];
-      var mx0 = -CIRC / 2 + tx * tileM, my1 = CIRC / 2 - ty * tileM; // linke obere Ecke (Mercator-m)
-      im = document.createElement('img');
-      im.src = 'data/tiles/' + name;
-      im.style.left = ((mx0 - meta.bbox[0]) * L.s) + 'px';
-      im.style.top = ((meta.bbox[3] - my1) * L.s) + 'px';
-      im.style.width = (tileM * L.s + 1) + 'px';
-      im.style.height = (tileM * L.s + 1) + 'px';
-      return im;
-    }
-    var base = [], lab = [];
-    for (i = 0; i < meta.tiles.length; i++) {
-      m = re.exec(meta.tiles[i]); if (!m) continue;
-      base.push([meta.tiles[i], m]);
-    }
-    for (i = 0; i < base.length; i++) map.appendChild(addTile(base[i][0], base[i][1]));
-    var shade = document.createElement('div');
-    shade.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.35)';
-    map.appendChild(shade);
-    // Radarframes
-    for (i = 0; i < imgs.length; i++) {
-      var r = imgs[i]; r.style.left = '0px'; r.style.top = '0px';
-      r.style.width = L.w + 'px'; r.style.height = L.h + 'px';
-      r.style.opacity = i === cur ? '0.85' : '0';
-      map.appendChild(r);
-    }
-    for (i = 0; i < lab.length; i++) map.appendChild(addTile(lab[i][0], lab[i][1]));
+    var bc = document.createElement('canvas');
+    bc.width = Math.round(L.w * cs); bc.height = Math.round(L.h * cs);
+    bc.style.cssText = 'left:0;top:0;width:' + L.w + 'px;height:' + L.h + 'px';
+    map.appendChild(bc);
+    drawBase(bc, L, cs);
+    radarCv = document.createElement('canvas');
+    radarCv.style.cssText = 'left:0;top:0;opacity:0.85;width:' + L.w + 'px;height:' + L.h + 'px';
+    radarCtx = radarCv.getContext('2d');
+    map.appendChild(radarCv);
     // Kreise (Radius in Mercator-Metern, Mittelpunkt = Marker)
     var cx = (meta.marker[0] - meta.bbox[0]) * L.s, cy = (meta.bbox[3] - meta.marker[1]) * L.s, ci, cr, cd;
     for (ci = 0; ci < (meta.circles_m || []).length; ci++) {
@@ -129,9 +137,16 @@
     }
     // Marker
     var mk = document.createElement('div');
-    var px = (meta.marker[0] - meta.bbox[0]) * L.s, py = (meta.bbox[3] - meta.marker[1]) * L.s;
-    mk.style.cssText = 'position:absolute;width:' + (18*u) + 'px;height:' + (18*u) + 'px;margin:' + (-11*u) + 'px 0 0 ' + (-11*u) + 'px;border:' + (3*u) + 'px solid #fff;border-radius:50%;background:#e53935;left:' + px + 'px;top:' + py + 'px';
+    mk.style.cssText = 'position:absolute;width:' + (18*u) + 'px;height:' + (18*u) + 'px;margin:' + (-11*u) + 'px 0 0 ' + (-11*u) + 'px;border:' + (3*u) + 'px solid #fff;border-radius:50%;background:#e53935;left:' + cx + 'px;top:' + cy + 'px';
     map.appendChild(mk);
+  }
+  function drawRadar(im) {
+    if (!radarCv || !im || !im.naturalWidth) return;
+    if (radarCv.width !== im.naturalWidth || radarCv.height !== im.naturalHeight) {
+      radarCv.width = im.naturalWidth; radarCv.height = im.naturalHeight;
+    }
+    radarCtx.clearRect(0, 0, radarCv.width, radarCv.height);
+    radarCtx.drawImage(im, 0, 0);
   }
 
   // ---------- Frames laden ----------
@@ -178,7 +193,7 @@
 
   function show(i) {
     var k, f = meta.frames[i], bar = $('bar').childNodes;
-    for (k = 0; k < imgs.length; k++) imgs[k].style.opacity = k === i ? '0.85' : '0';
+    drawRadar(imgs[i]);
     for (k = 0; k < bar.length; k++) {
       var base = meta.frames[k].forecast ? 'fc' : '';
       bar[k].className = base + (k === i ? ' cur' : '');

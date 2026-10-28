@@ -10,3 +10,11 @@ Kein Kartenrendering im Browser nötig: nur `<img>`-Elemente und ES5-JavaScript.
   Kacheln werden dauerhaft in `data/tiles` gecacht und nur geladen, wenn sie fehlen.
   Bei Aenderung von Mittelpunkt/Breite/Zoom werden nur die zusaetzlich benoetigten Kacheln nachgeladen.
 - Quellen: Radar © Deutscher Wetterdienst (GeoNutzV), Karte © OpenStreetMap-Mitwirkende.
+
+## Performance (Raspberry Pi / 4K)
+- Karte und Radar werden auf je ein Canvas gezeichnet; die Basemap nur einmal. `MAX_CANVAS` oben in `index.html`
+  (Standard 1920 px) begrenzt die Canvas-Groesse, der Browser skaliert hoch. Kleiner = weniger CPU/RAM.
+- `image_width`: `"auto"` (Standard) = 4 px/km Kartenbreite (min. 320, max. 1280), da das DWD-Radar nativ nur 1 km aufloest.
+- `basemap_zoom`: `"auto"` waehlt die Kachelstufe fuer ca. 1920 px Kartenbreite (OSM-Kacheln sind 256 px). Zahl = fest.
+- `parallel_downloads` (Standard 3): gleichzeitige Radar-Abrufe.
+- Schlaegt ein Abruf fehl, wird bis zu 3x wiederholt und die Server-Antwort ins Log geschrieben (`fetch.log`).
