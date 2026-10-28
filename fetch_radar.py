@@ -23,6 +23,28 @@ def get(url, timeout=40):
         return r.read()
 
 
+def get_png(url, tries=6):
+    """Holt ein PNG. Der DWD-Server meldet gelegentlich zufaellig InvalidDimensionValue fuer gueltige Zeitstempel
+    (vermutlich unterschiedlicher Stand der Backend-Knoten); ein erneuter Versuch hat dann meist Erfolg."""
+    last = None
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                body, ctype = r.read(), r.headers.get("Content-Type", "?")
+            if body[:4] == b"\x89PNG":
+                return body
+            text = body[:2000].decode("utf-8", "replace")
+            exc = re.search(r"<ServiceException[^>]*>(.*?)</ServiceException>", text, re.S)
+            snippet = re.sub(r"\s+", " ", (exc.group(1) if exc else text)[:300]).strip()
+            last = "keine PNG-Antwort (Content-Type %s, %d Byte): %s" % (ctype, len(body), snippet)
+        except Exception as e:
+            last = "%s: %s" % (type(e).__name__, e)
+        if i < tries - 1:
+            time.sleep(1 + i)
+    raise ValueError(last)
+
+
 def merc(lat, lon):
     return (R * math.radians(lon),
             R * math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)))
@@ -121,9 +143,7 @@ def main():
             "width": w, "height": h, "format": "image/png", "transparent": "true",
             "time": iso(t), "reference_time": iso(ref)})
         try:
-            img = get(WMS + "?" + q)
-            if img[:4] != b"\x89PNG":
-                raise ValueError("keine PNG-Antwort")
+            img = get_png(WMS + "?" + q)
             open(path + ".tmp", "wb").write(img); os.replace(path + ".tmp", path)
             return t, fn, True
         except Exception as e:
@@ -135,10 +155,10 @@ def main():
     frames = [{"t": iso(t), "file": fn, "forecast": t > ref} for t, fn, ok in results if ok]
     if all(ok for _, _, ok in results):
         open(ref_file, "w").write(iso(ref))
-    # alte Frames loeschen
-    keep = set(f["file"] for f in frames)
+    # nur Frames loeschen, die vor dem Zeitfenster liegen (eine fehlgeschlagene Abfrage loescht nichts)
+    cutoff = "r_%s.png" % start.strftime("%Y%m%dT%H%MZ")
     for f in os.listdir(DATA):
-        if f.startswith("r_") and f.endswith(".png") and f not in keep:
+        if f.startswith("r_") and f.endswith(".png") and f < cutoff:
             os.remove(os.path.join(DATA, f))
     z = tile_zoom(cfg)
     meta = {
