@@ -63,15 +63,33 @@ def iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def reference_time():
-    """Letzte Analysezeit = Default von REFERENCE_TIME des Layers."""
-    xml = get(WMS.replace("/wms", "/Radar_rv_product_1x1km_ger/ows") + "?service=WMS&version=1.3.0&request=GetCapabilities", 90).decode("utf-8", "replace")
-    i = xml.find("<Name>Radar_rv_product_1x1km_ger</Name>")
-    seg = xml[i:xml.find("</Layer>", i)]
-    ref = re.search(r'<Dimension name="REFERENCE_TIME" default="([^"]+)"', seg).group(1)
-    tdim = re.search(r'<Dimension name="time"[^>]*>[^/<]*/([^/<]+)/', seg).group(1)
+def reference_time(max_age_min=60, tries=8):
+    """Letzte Analysezeit = Default von REFERENCE_TIME des Layers.
+
+    Der DWD-Dienst liefert abwechselnd Antworten verschiedener Backend-Knoten, manche mit Tage altem Stand.
+    Deshalb: Referenzzeit gegen die Systemzeit pruefen (setzt NTP-synchronisierte Uhr voraus) und bei veraltetem Stand erneut abfragen."""
+    url = WMS.replace("/wms", "/Radar_rv_product_1x1km_ger/ows") + "?service=WMS&version=1.3.0&request=GetCapabilities"
     p = lambda s: datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-    return p(ref), p(tdim)
+    last = "unbekannt"
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url + "&_=%d" % time.time(), headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=90) as r:
+                xml = r.read().decode("utf-8", "replace")
+            now = datetime.now(timezone.utc)
+            i0 = xml.find("<Name>Radar_rv_product_1x1km_ger</Name>")
+            seg = xml[i0:xml.find("</Layer>", i0)]
+            ref = p(re.search(r'<Dimension name="REFERENCE_TIME" default="([^"]+)"', seg).group(1))
+            tmax = p(re.search(r'<Dimension name="time"[^>]*>[^/<]*/([^/<]+)/', seg).group(1))
+            age = (now - ref).total_seconds() / 60
+            if age <= max_age_min:
+                return ref, tmax
+            last = "Referenzzeit %s ist %d min alt (veralteter DWD-Knoten)" % (iso(ref), age)
+        except Exception as e:
+            last = "%s: %s" % (type(e).__name__, e)
+        if i < tries - 1:
+            time.sleep(2)
+    raise RuntimeError("kein aktueller Stand vom DWD nach %d Versuchen: %s" % (tries, last))
 
 
 def image_width(cfg):
@@ -119,7 +137,11 @@ def main():
     os.makedirs(DATA, exist_ok=True)
     bb = bbox(cfg)
     tiles = basemap(cfg, bb)
-    ref, tmax = reference_time()
+    try:
+        ref, tmax = reference_time(cfg.get("max_reference_age_min", 60))
+    except RuntimeError as e:
+        print("Abbruch, vorhandene Daten bleiben unveraendert: %s" % e, file=sys.stderr)
+        sys.exit(1)
     w = image_width(cfg); h = round(w * cfg["aspect"][1] / cfg["aspect"][0])
     start = ref - timedelta(minutes=cfg["past_minutes"])
     end = min(ref + timedelta(minutes=cfg["future_minutes"]), tmax)
